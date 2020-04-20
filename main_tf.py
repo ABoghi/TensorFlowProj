@@ -21,8 +21,14 @@ def analyse_input(training_input: str = titanic_train):
     print(f"Statstics on Training Set:")
     print(training_df.describe())
 
-    #for cols in training_df.columns:
-        #training_df[cols].hist()
+    for cols in training_df.columns:
+        if training_df[cols].dtypes == object:
+            figo = plt.figure()
+            training_df[cols].value_counts().plot(kind='barh')
+        else:
+            fign = plt.figure()
+            training_df[cols].hist()
+            plt.ylabel(cols)
 
     return training_df
 

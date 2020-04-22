@@ -142,3 +142,34 @@ def train_linear_estimator(output_field: str = 'survived', training_file: str = 
     trained_linear_estimator = linear_estimator.train(training_function)
 
     return trained_linear_estimator
+
+
+def evaluate_linear_estimator(trained_linear_estimator, output_field: str = 'survived', evaluation_file: str = titanic_eval):
+    """
+    Parameters
+    ----------
+    trained_linear_estimator
+    output_field: str
+    evaluation_file: str
+
+    Returns
+    -------
+    results
+
+    """
+
+    evaluation_df = pd.read_csv(evaluation_file)  # testing data
+    evaluation_output = evaluation_df.pop(output_field)
+    eval_input_fn = make_input_function(
+        evaluation_df, evaluation_output, num_epochs=1, shuffle=False)
+    # get model metrics/stats by testing on tetsing data
+    # results is of type 'dict'
+    results = trained_linear_estimator.evaluate(eval_input_fn)
+    # pred_dicts is a list
+    pred_dicts = list(trained_linear_estimator.predict(eval_input_fn))
+
+    probs = pd.Series([pred['probabilities'][1] for pred in pred_dicts])
+
+    probs.plot(kind='hist', bins=20, title='predicted probabilities')
+
+    return results, pred_dicts

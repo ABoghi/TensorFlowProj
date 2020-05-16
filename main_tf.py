@@ -13,6 +13,10 @@ from keras.preprocessing.image import ImageDataGenerator
 import os
 import tensorflow_datasets as tfds
 
+from keras.datasets import imdb
+from keras.preprocessing import sequence
+import keras
+
 # linear regression
 titanic_train = 'https://storage.googleapis.com/tf-datasets/titanic/train.csv'
 titanic_eval = 'https://storage.googleapis.com/tf-datasets/titanic/eval.csv'
@@ -542,7 +546,9 @@ def data_augmentation(train_images, image_index: int = 20,
 
 
 def use_pretrained_dataset(dataset_name: str = 'cats_vs_dogs', with_info: bool = True, as_supervised: bool = True,
-                           split=['train[:80%]', 'train[80%:90%]', 'train[90%:]']):
+                           split=['train[:80%]',
+                                  'train[80%:90%]', 'train[90%:]'],
+                           BATCH_SIZE: int = 32, SHUFFLE_BUFFER_SIZE: int = 1000):
 
     tfds.disable_progress_bar()
 
@@ -573,7 +579,17 @@ def use_pretrained_dataset(dataset_name: str = 'cats_vs_dogs', with_info: bool =
         plt.imshow(image)
         plt.title(get_label_name(label))
 
-    return
+    train_batches = train.shuffle(SHUFFLE_BUFFER_SIZE).batch(BATCH_SIZE)
+    validation_batches = validation.batch(BATCH_SIZE)
+    test_batches = test.batch(BATCH_SIZE)
+
+    for img, label in raw_train.take(2):
+        print("Original shape:", img.shape)
+
+    for img, label in train.take(2):
+        print("New shape:", img.shape)
+
+    return train_batches, validation_batches
 
 
 # All images will be resized to 160x160
@@ -585,3 +601,196 @@ def format_example(image, label, IMG_SIZE: int = 160):
     image = (image/127.5) - 1
     image = tf.image.resize(image, (IMG_SIZE, IMG_SIZE))
     return image, label
+
+
+def pick_pretrained(train_batches, trainable: bool = False, IMG_SIZE: int = 160, include_top: bool = False, weights: str = 'imagenet'):
+
+    IMG_SHAPE = (IMG_SIZE, IMG_SIZE, 3)
+
+    # Create the base model from the pre-trained model MobileNet V2
+    base_model = tf.keras.applications.MobileNetV2(
+        input_shape=IMG_SHAPE,
+        include_top=False,  # don't include the classifier
+        weights='imagenet'  # specific save of the weight
+    )
+
+    base_model.summary()
+
+    for image, _ in train_batches.take(1):
+        pass
+
+    feature_batch = base_model(image)
+    print(feature_batch.shape)
+
+    base_model.trainable = trainable
+
+    base_model.summary()
+
+    global_average_layer = tf.keras.layers.GlobalAveragePooling2D()
+
+    prediction_layer = keras.layers.Dense(1)
+
+    model = tf.keras.Sequential([
+        base_model,
+        global_average_layer,
+        prediction_layer
+    ])
+
+    model.summary()
+
+    return model
+
+
+def train_pretrained(model, train_batches, validation_batches, base_learning_rate: float = 0.0001, initial_epochs: int = 3, validation_steps: int = 20):
+
+    model.compile(optimizer=tf.keras.optimizers.RMSprop(lr=base_learning_rate),
+                  loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
+                  # because we are using two classes
+                  metrics=['accuracy'])
+
+    # We can evaluate the model right now to see how it does before training
+    # it on our new images
+    loss0, accuracy0 = model.evaluate(
+        validation_batches, steps=validation_steps)
+
+    print(f"loss0 = {loss0}, accuracy0 = {accuracy0}")
+
+    # Now we can train it on our images
+    history = model.fit(train_batches,
+                        epochs=initial_epochs,
+                        validation_data=validation_batches)
+
+    acc = history.history['accuracy']
+    print(acc)
+
+    # we can save the model and reload it at anytime in the future
+    model.save("dogs_vs_cats.h5")  # .h5 format to save model in keras
+    new_model = tf.keras.models.load_model('dogs_vs_cats.h5')
+
+    return new_model
+
+
+vocab = {}  # maps word to integer representing it
+word_encoding = 1
+
+
+def bag_of_words(text):
+    global word_encoding
+
+    # create a list of all of the words in the text, well assume there is no grammar in our text for this example
+    words = text.lower().split(" ")
+    bag = {}  # stores all of the encodings and their frequency
+
+    for word in words:
+        if word in vocab:
+            encoding = vocab[word]  # get encoding from vocab
+        else:
+            vocab[word] = word_encoding
+            encoding = word_encoding
+            word_encoding += 1
+
+    if encoding in bag:
+        bag[encoding] += 1
+    else:
+        bag[encoding] = 1
+
+    return bag
+
+
+def test_bag_of_words(text: str = "this is a test to see if this test will work is is test a a"):
+    bag = bag_of_words(text)
+    print(bag)
+    print(vocab)
+
+
+def movie_review(VOCAB_SIZE: int = 88584):
+
+    (train_data, train_labels), (test_data,
+                                 test_labels) = imdb.load_data(num_words=VOCAB_SIZE)
+
+    return train_data, train_labels, test_data, test_labels
+
+
+def pre_process_movie_review(train_data: np.ndarray, test_data: np.ndarray, MAXLEN: int = 260):
+
+    size = []
+    for i in range(len(train_data)):
+        m = len(train_data[i])
+        size.append(m)
+
+    maxlen = max(size)
+    print(f"the actual maximum length is: {maxlen}")
+    print(f"the used maximum lenght is: {MAXLEN}")
+    # padding
+    train_data = sequence.pad_sequences(train_data, MAXLEN)
+    test_data = sequence.pad_sequences(test_data, MAXLEN)
+
+    return train_data, test_data
+
+
+def movie_RNN_model(VOCAB_SIZE: int = 88584):
+
+    model = tf.keras.Sequential([
+        tf.keras.layers.Embedding(VOCAB_SIZE, 32),
+        tf.keras.layers.LSTM(32),
+        # either positive or negative review
+        tf.keras.layers.Dense(1, activation="sigmoid")
+    ])
+
+    return model
+
+
+def train_movie_RNN(model, train_data: np.ndarray, train_labels: np.ndarray, epochs: int = 10, validation_split: float = 0.2, loss: str = "binary_crossentropy", optimizer: str = "rmsprop", metrics=['acc']):
+
+    model.compile(loss=loss, optimizer=optimizer, metrics=metrics)
+
+    history = model.fit(train_data, train_labels,
+                        epochs=epochs, validation_split=validation_split)
+
+    return model, history
+
+
+def evaluate_movie_RNN(model, test_data: np.ndarray, test_labels: np.ndarray):
+
+    results = model.evaluate(test_data, test_labels)
+
+    return results
+
+
+word_index = imdb.get_word_index()
+
+
+def encode_text(text, MAXLEN: int = 260):
+    tokens = keras.preprocessing.text.text_to_word_sequence(text)
+    tokens = [word_index[word] if word in word_index else 0 for word in tokens]
+    return sequence.pad_sequences([tokens], MAXLEN)[0]
+
+
+def evaluate_code_text(text: str = "that movie was just amazing, so amazing", MAXLEN: int = 260):
+    encoded = encode_text(text, MAXLEN)
+    return encoded
+
+
+# while were at it lets make a decode function
+reverse_word_index = {value: key for (key, value) in word_index.items()}
+
+
+def decode_integers(integers):
+    PAD = 0
+    text = ""
+    for num in integers:
+        if num != PAD:
+            text += reverse_word_index[num] + " "
+
+    return text[:-1]
+
+
+def predict_en_de(text, model, MAXLEN: int = 260):
+    encoded_text = encode_text(text)
+    pred = np.zeros((1, MAXLEN))
+    pred[0] = encoded_text
+    result = model.predict(pred)
+    if result[0] > 0.5:
+        print(f"The review is positive ({100*float(result[0])}% accuracy)")
+    else:
+        print(f"The review is negative ({100-100*float(result[0])}% accuracy)")
